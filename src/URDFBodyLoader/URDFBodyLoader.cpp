@@ -18,13 +18,15 @@
 #include <fmt/format.h>
 #include <pugixml.hpp>
 
-using namespace std;
 using namespace cnoid;
 
 namespace filesystem = cnoid::stdx::filesystem;
 using fmt::format;
 using pugi::xml_attribute;
 using pugi::xml_node;
+using std::endl;
+using std::string;
+using std::vector;
 
 const char CHILD[] = "child";
 const char INERTIA[] = "inertia";
@@ -53,7 +55,7 @@ struct Registration
     {
         BodyLoader::registerLoader({"urdf", "xacro"},
                                    []() -> AbstractBodyLoaderPtr {
-                                       return make_shared<URDFBodyLoader>();
+                                       return std::make_shared<URDFBodyLoader>();
                                    });
     }
 } registration;
@@ -64,8 +66,8 @@ namespace cnoid {
 class URDFBodyLoader::Impl
 {
 public:
-    ostream* os_;
-    ostream& os() { return *os_; }
+    std::ostream* os_;
+    std::ostream& os() { return *os_; }
 
     Impl();
     bool load(Body* body, const string& filename);

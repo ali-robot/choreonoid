@@ -11,6 +11,7 @@
 #include <cnoid/Body>
 #include <cnoid/BodyLoader>
 #include <cnoid/EigenUtil>
+#include <cnoid/MeshGenerator>
 #include <cnoid/NullOut>
 #include <cnoid/SceneLoader>
 #include <cnoid/UTF8>
@@ -28,7 +29,12 @@ using std::endl;
 using std::string;
 using std::vector;
 
+const char BOX[] = "box";
 const char CHILD[] = "child";
+const char COLLISION[] = "collision";
+const char CYLINDER[] = "cylinder";
+const char FILENAME[] = "filename";
+const char GEOMETRY[] = "geometry";
 const char INERTIA[] = "inertia";
 const char INERTIAL[] = "inertial";
 const char IXX[] = "ixx";
@@ -38,14 +44,21 @@ const char IYY[] = "iyy";
 const char IYZ[] = "iyz";
 const char IZZ[] = "izz";
 const char JOINT[] = "joint";
+const char LENGTH[] = "length";
 const char LINK[] = "link";
 const char MASS[] = "mass";
+const char MESH[] = "mesh";
 const char NAME[] = "name";
 const char ORIGIN[] = "origin";
 const char PARENT[] = "parent";
+const char RADIUS[] = "radius";
 const char ROBOT[] = "robot";
 const char RPY[] = "rpy";
+const char SCALE[] = "scale";
+const char SIZE[] = "size";
+const char SPHERE[] = "sphere";
 const char VALUE[] = "value";
+const char VISUAL[] = "visual";
 const char XYZ[] = "xyz";
 
 namespace {
@@ -60,6 +73,73 @@ struct Registration
     }
 } registration;
 
+
+class ROSPackageSchemeHandler
+{
+    vector<string> packagePaths;
+
+public:
+    ROSPackageSchemeHandler()
+    {
+        const char* str = getenv("ROS_PACKAGE_PATH");
+        if (str) {
+            do {
+                const char* begin = str;
+                while (*str != ':' && *str)
+                    str++;
+                packagePaths.push_back(string(begin, str));
+            } while (0 != *str++);
+        }
+    }
+
+    string operator()(const string& path, std::ostream& os)
+    {
+        const string prefix = "package://";
+        if (!(path.size() >= prefix.size()
+              && std::equal(prefix.begin(), prefix.end(), path.begin()))) {
+            return path;
+        }
+
+        filesystem::path filepath(fromUTF8(path.substr(prefix.size())));
+        auto iter = filepath.begin();
+        if (iter == filepath.end()) {
+            return string();
+        }
+
+        filesystem::path directory = *iter++;
+        filesystem::path relativePath;
+        while (iter != filepath.end()) {
+            relativePath /= *iter++;
+        }
+
+        bool found = false;
+        filesystem::path combined;
+
+        for (auto element : packagePaths) {
+            filesystem::path packagePath(element);
+            combined = packagePath / filepath;
+            if (exists(combined)) {
+                found = true;
+                break;
+            }
+            combined = packagePath / relativePath;
+            if (exists(combined)) {
+                found = true;
+                break;
+            }
+        }
+
+        if (found) {
+            return toUTF8(combined.string());
+        } else {
+            os << format("\"{}\" is not found in the ROS package directories.",
+                         path)
+               << endl;
+            return string();
+        }
+    }
+};
+
 }  // namespace
 
 namespace cnoid {
@@ -73,6 +153,9 @@ public:
     bool load(Body* body, const string& filename);
 
 private:
+    SceneLoader sceneLoader_;
+    ROSPackageSchemeHandler ROSPackageSchemeHandler_;
+
     vector<xml_node> findChildrenByGrandchildAttribute(
         const xml_node& node,
         const char* child_name,
@@ -82,12 +165,15 @@ private:
     vector<xml_node> findRootLinks(const xml_node& robot);
     bool loadLink(LinkPtr link, const xml_node& linkNode);
     bool loadInertialTag(LinkPtr& link, const xml_node& inertialNode);
+    bool loadVisualTag(LinkPtr& link, const xml_node& visualNode);
+    bool loadCollisionTag(LinkPtr& link, const xml_node& collisionNode);
     bool readOriginTag(const xml_node& originNode,
                        const string& elementName,
                        Vector3& translation,
                        Matrix3& rotation);
     void printReadingInertiaTagError(const string& attribute_name);
     bool readInertiaTag(const xml_node& inertiaNode, Matrix3& inertiaMatrix);
+    bool readGeometryTag(const xml_node& geometryNode, SgNodePtr& mesh);
 };
 }  // namespace cnoid
 
@@ -224,6 +310,30 @@ bool URDFBodyLoader::Impl::loadLink(LinkPtr link, const xml_node& linkNode)
         }
     }
 
+    // 'visual' (optional)
+    const xml_node& visualNode = linkNode.child(VISUAL);
+    if (visualNode.empty()) {
+        os() << "Debug: link '" << name << "' has no visual data." << endl;
+    } else {
+        if (!loadVisualTag(link, visualNode)) {
+            os() << "Note: The above error occurs while loading link '" << name
+                 << "'." << endl;
+            return false;
+        }
+    }
+
+    // 'collision' (optional)
+    const xml_node& collisionNode = linkNode.child(COLLISION);
+    if (collisionNode.empty()) {
+        os() << "Debug: link '" << name << "' has no collision data." << endl;
+    } else {
+        if (!loadCollisionTag(link, collisionNode)) {
+            os() << "Note: The above error occurs while loading link '" << name
+                 << "'." << endl;
+            return false;
+        }
+    }
+
     return true;
 }
 
@@ -258,6 +368,74 @@ bool URDFBodyLoader::Impl::loadInertialTag(LinkPtr& link,
         }
     }
     link->setInertia(rotation * inertiaMatrix * rotation.transpose());
+
+    return true;
+}
+
+
+bool URDFBodyLoader::Impl::loadVisualTag(LinkPtr& link,
+                                         const xml_node& visualNode)
+{
+    // 'origin' tag
+    const xml_node& originNode = visualNode.child(ORIGIN);
+    Vector3 translation = Vector3::Zero();
+    Matrix3 rotation = Matrix3::Identity();
+    if (!readOriginTag(originNode, INERTIAL, translation, rotation)) {
+        return false;
+    }
+    Isometry3 originalPose;
+    originalPose.linear() = rotation;
+    originalPose.translation() = translation;
+
+    // 'geometry' tag
+    const xml_node& geometryNode = visualNode.child(GEOMETRY);
+    if (geometryNode.empty()) {
+        os() << "Error: Visual geometry is not found." << endl;
+        return false;
+    }
+
+    SgNodePtr mesh = new SgNode;
+    if (!readGeometryTag(geometryNode, mesh)) {
+        os() << "Error: Failed to load visual geometry" << endl;
+    }
+    SgPosTransformPtr transformation = new SgPosTransform(originalPose);
+    transformation->addChild(mesh);
+    link->addVisualShapeNode(transformation);
+
+    // TODO: 'material' tag
+
+    return true;
+}
+
+
+bool URDFBodyLoader::Impl::loadCollisionTag(LinkPtr& link,
+                                            const xml_node& collisionNode)
+{
+    // 'origin' tag
+    const xml_node& originNode = collisionNode.child(ORIGIN);
+    Vector3 translation = Vector3::Zero();
+    Matrix3 rotation = Matrix3::Identity();
+    if (!readOriginTag(originNode, INERTIAL, translation, rotation)) {
+        return false;
+    }
+    Isometry3 originalPose;
+    originalPose.linear() = rotation;
+    originalPose.translation() = translation;
+
+    // 'geometry' tag
+    const xml_node& geometryNode = collisionNode.child(GEOMETRY);
+    if (geometryNode.empty()) {
+        os() << "Error: Collision geometry is not found." << endl;
+        return false;
+    }
+
+    SgNodePtr mesh = new SgNode;
+    if (!readGeometryTag(geometryNode, mesh)) {
+        os() << "Error: Failed to load collision geometry" << endl;
+    }
+    SgPosTransformPtr transformation = new SgPosTransform(originalPose);
+    transformation->addChild(mesh);
+    link->addCollisionShapeNode(transformation);
 
     return true;
 }
@@ -345,6 +523,98 @@ bool URDFBodyLoader::Impl::readInertiaTag(const xml_node& inertiaNode,
         return false;
     } else {
         inertiaMatrix(2, 2) = inertiaNode.attribute(IZZ).as_double();
+    }
+
+    return true;
+}
+
+
+bool URDFBodyLoader::Impl::readGeometryTag(const xml_node& geometryNode,
+                                           SgNodePtr& mesh)
+{
+    if (boost::size(geometryNode.children()) < 1) {
+        os() << "Error: no geometry is found." << endl;
+    } else if (boost::size(geometryNode.children()) > 1) {
+        os() << "Error: one link can have only one geometry." << endl;
+    }
+
+    MeshGenerator meshGenerator;
+    SgShapePtr shape = new SgShape;
+    // const xml_node& elementNode = geometryNode.first_child();
+
+    if (!geometryNode.child(BOX).empty()) {
+        Vector3 size = Vector3::Zero();
+        if (!toVector3(geometryNode.child(BOX).attribute(SIZE).as_string(),
+                       size)) {
+            os() << "Error: box size is written in invalid format." << endl;
+        }
+
+        shape->setMesh(meshGenerator.generateBox(size));
+        mesh = shape;
+    } else if (!geometryNode.child(CYLINDER).empty()) {
+        if (geometryNode.child(CYLINDER).attribute(RADIUS).empty()) {
+            os() << "Error: cylinder radius is not defined." << endl;
+            return false;
+        }
+        if (geometryNode.child(CYLINDER).attribute(LENGTH).empty()) {
+            os() << "Error: cylinder length is not defined." << endl;
+            return false;
+        }
+        const double radius
+            = geometryNode.child(CYLINDER).attribute(RADIUS).as_double();
+        const double length
+            = geometryNode.child(CYLINDER).attribute(LENGTH).as_double();
+
+        shape->setMesh(meshGenerator.generateCylinder(radius, length));
+        mesh = shape;
+    } else if (!geometryNode.child(SPHERE).empty()) {
+        if (geometryNode.child(SPHERE).attribute(RADIUS).empty()) {
+            os() << "Error: sphere radius is not defined." << endl;
+            return false;
+        }
+        const double radius
+            = geometryNode.child(SPHERE).attribute(RADIUS).as_double();
+
+        shape->setMesh(meshGenerator.generateSphere(radius));
+        mesh = shape;
+    } else if (!geometryNode.child(MESH).empty()) {
+        if (geometryNode.child(MESH).attribute(FILENAME).empty()) {
+            os() << "Error: mesh file is not specified." << endl;
+            return false;
+        }
+
+        // loads a mesh file
+        const string filename
+            = geometryNode.child(MESH).attribute(FILENAME).as_string();
+        bool isSupportedFormat = false;
+        mesh = sceneLoader_.load(ROSPackageSchemeHandler_(filename, os()),
+                                 isSupportedFormat);
+        if (!isSupportedFormat) {
+            os() << "Error: format of the specified mesh file '" << filename
+                 << "' is not supported." << endl;
+            return false;
+        }
+
+        // scales the mesh
+        if (!geometryNode.child(MESH).attribute(SCALE).empty()) {
+            Vector3 scale = Vector3::Ones();
+            if (!toVector3(geometryNode.child(MESH).attribute(SCALE).as_string(),
+                           scale)) {
+                os() << "Error: mesh scale is written in invalid format."
+                     << endl;
+
+                return false;
+            }
+
+            SgScaleTransformPtr scaler = new SgScaleTransform;
+            scaler->setScale(scale);
+            scaler->addChild(mesh);
+            mesh = scaler;
+        }
+    } else {
+        os() << "Error: unsupported geometry "
+             << geometryNode.first_child().name() << " is described." << endl;
+        return false;
     }
 
     return true;

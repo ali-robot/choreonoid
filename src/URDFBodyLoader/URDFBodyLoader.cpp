@@ -29,11 +29,16 @@ using std::endl;
 using std::string;
 using std::vector;
 
+const char AXIS[] = "axis";
 const char BOX[] = "box";
 const char CHILD[] = "child";
 const char COLLISION[] = "collision";
+const char CONTINUOUS[] = "continuous";
 const char CYLINDER[] = "cylinder";
+const char DYNAMICS[] = "dynamics";
+const char EFFORT[] = "effort";
 const char FILENAME[] = "filename";
+const char FIXED[] = "fixed";
 const char GEOMETRY[] = "geometry";
 const char INERTIA[] = "inertia";
 const char INERTIAL[] = "inertial";
@@ -45,19 +50,27 @@ const char IYZ[] = "iyz";
 const char IZZ[] = "izz";
 const char JOINT[] = "joint";
 const char LENGTH[] = "length";
+const char LIMIT[] = "limit";
 const char LINK[] = "link";
+const char LOWER[] = "lower";
 const char MASS[] = "mass";
 const char MESH[] = "mesh";
+const char MIMIC[] = "mimic";
 const char NAME[] = "name";
 const char ORIGIN[] = "origin";
 const char PARENT[] = "parent";
+const char PRISMATIC[] = "prismatic";
 const char RADIUS[] = "radius";
+const char REVOLUTE[] = "revolute";
 const char ROBOT[] = "robot";
 const char RPY[] = "rpy";
 const char SCALE[] = "scale";
 const char SIZE[] = "size";
 const char SPHERE[] = "sphere";
+const char TYPE[] = "type";
+const char UPPER[] = "upper";
 const char VALUE[] = "value";
+const char VELOCITY[] = "velocity";
 const char VISUAL[] = "visual";
 const char XYZ[] = "xyz";
 
@@ -153,6 +166,7 @@ public:
     bool load(Body* body, const string& filename);
 
 private:
+    int jointCounter_;
     SceneLoader sceneLoader_;
     ROSPackageSchemeHandler ROSPackageSchemeHandler_;
 
@@ -174,6 +188,8 @@ private:
     void printReadingInertiaTagError(const string& attribute_name);
     bool readInertiaTag(const xml_node& inertiaNode, Matrix3& inertiaMatrix);
     bool readGeometryTag(const xml_node& geometryNode, SgNodePtr& mesh);
+    bool loadJoint(std::unordered_map<string, LinkPtr>& linkMap,
+                   const xml_node& jointNode);
 };
 }  // namespace cnoid
 
@@ -186,6 +202,7 @@ URDFBodyLoader::URDFBodyLoader()
 URDFBodyLoader::Impl::Impl()
 {
     os_ = &nullout();
+    jointCounter_ = 0;
 }
 
 
@@ -230,14 +247,26 @@ bool URDFBodyLoader::Impl::load(Body* body, const string& filename)
     std::unordered_map<string, LinkPtr> linkMap;
     linkMap.reserve(boost::size(linkNodes));
 
+    // loads all links
     for (xml_node linkNode : linkNodes) {
         LinkPtr link = new Link;
         if (!loadLink(link, linkNode)) {
-            // some err msg
             return false;
         }
         linkMap.emplace(link->name(), link);
     }
+
+    // loads all joints with creating a link tree
+    for (xml_node jointNode : jointNodes) {
+        if (!loadJoint(linkMap, jointNode)) {
+            // TODO: print some err msg
+            return false;
+        }
+    }
+
+    // TODO: find the root link
+    // LinkPtr rootLink = ...
+    // body->setRootLink(rootLink);
 
     // TEST
     for (auto element : linkMap) {
@@ -619,5 +648,151 @@ bool URDFBodyLoader::Impl::readGeometryTag(const xml_node& geometryNode,
         return false;
     }
 
+    return true;
+}
+
+bool URDFBodyLoader::Impl::loadJoint(
+    std::unordered_map<string, LinkPtr>& linkMap, const xml_node& jointNode)
+{
+    // 'name' attribute (required)
+    if (jointNode.attribute(NAME).empty()) {
+        os() << "Error: There exist a unnamed joint." << endl;
+        return false;
+    }
+    const string jointName = jointNode.attribute(NAME).as_string();
+
+    // 'parent' tag (required)
+    if (jointNode.child(PARENT).attribute(LINK).empty()) {
+        os() << "Error: joint '" << jointName << "' has no parent." << endl;
+        return false;
+    }
+    const string parentName = jointNode.child(PARENT).attribute(LINK).as_string();
+    LinkPtr parent = (*linkMap.find(parentName)).second;
+
+    // 'child' tag (required)
+    if (jointNode.child(CHILD).attribute(LINK).empty()) {
+        os() << "Error: joint '" << jointName << "' has no child." << endl;
+        return false;
+    }
+    const string childName = jointNode.child(CHILD).attribute(LINK).as_string();
+    LinkPtr child = (*linkMap.find(childName)).second;
+
+    parent->appendChild(child);
+    child->setParent(parent);
+    child->setJointName(jointName);
+
+    // 'type' attribute (required)
+    if (jointNode.attribute(TYPE).empty()) {
+        os() << "Error: type of joint '" << jointName << "' is not defined."
+             << endl;
+        return false;
+    }
+    const string jointType = jointNode.attribute(TYPE).as_string();
+    if (jointType == REVOLUTE || jointType == CONTINUOUS) {
+        child->setJointType(Link::RevoluteJoint);
+        child->setJointId(jointCounter_++);
+    } else if (jointType == PRISMATIC) {
+        child->setJointType(Link::PrismaticJoint);
+        child->setJointId(jointCounter_++);
+    } else if (jointType == FIXED) {
+        child->setJointType(Link::FixedJoint);
+    }
+
+    // 'origin' tag (optional)
+    if (!jointNode.child(ORIGIN).empty()) {
+        Vector3 translation;
+        Matrix3 rotation;
+        if (!readOriginTag(jointNode.child(ORIGIN),
+                           JOINT,
+                           translation,
+                           rotation)) {
+            return false;
+        }
+        child->setOffsetTranslation(translation);
+        child->setOffsetRotation(rotation);
+    }
+
+    // 'axis' tag (optional)
+    if (jointNode.child(AXIS).empty()) {
+        child->setJointAxis(Vector3::UnitX());
+    } else {
+        if (jointNode.child(AXIS).attribute(XYZ).empty()) {
+            os() << "Error: axis of joint '" << jointName
+                 << "'is not defined while 'axis' tag is written.";
+            return false;
+        }
+
+        Vector3 axis = Vector3::UnitX();
+        if (!toVector3(jointNode.child(AXIS).attribute(XYZ).as_string(), axis)) {
+            os() << "Error: axis of joint '" << jointName
+                 << "' is written in invalid format." << endl;
+            return false;
+        }
+        child->setJointAxis(axis);
+    }
+
+    // 'limit' tag (partially required)
+    if (jointNode.child(LIMIT).empty()) {
+        if (jointType == REVOLUTE || jointType == PRISMATIC) {
+            os() << "Error: limit of joint '" << jointName
+                 << "' is not defined." << endl;
+            return false;
+        }
+    } else {
+        const xml_node& limitNode = jointNode.child(LIMIT);
+        // 'lower' and 'upper' attributes (optional, default: 0.0)
+        if (jointType == REVOLUTE || jointType == PRISMATIC) {
+            double lower = 0.0, upper = 0.0;
+            if (!limitNode.attribute(LOWER).empty()) {
+                lower = limitNode.attribute(LOWER).as_double();
+            }
+            if (!limitNode.attribute(UPPER).empty()) {
+                upper = limitNode.attribute(UPPER).as_double();
+            }
+            child->setJointRange(lower, upper);
+        }
+        // 'velocity' and 'effort' attributes (required)
+        if (jointType == REVOLUTE || jointType == PRISMATIC
+            || jointType == CONTINUOUS) {
+            if (limitNode.attribute(VELOCITY).empty()) {
+                os() << "Error: velocity limit of joint '" << jointName
+                     << "' is not defined." << endl;
+                return false;
+            }
+            const double velocityLimit = limitNode.attribute(VELOCITY)
+                                             .as_double();
+            if (velocityLimit < 0.0) {
+                os() << "Error: velocity limit of joint '" << jointName
+                     << "' have to be positive." << endl;
+                return false;
+            }
+            child->setJointVelocityRange(-velocityLimit, velocityLimit);
+
+            // does choreonoid have effort limit functions?
+            //
+            // if (limitNode.attribute(EFFORT).empty()) {
+            //     os() << "Error: effort limit of joint '" << jointName
+            //          << "' is not defined." << endl;
+            //     return false;
+            // }
+            // const double effortLimit = limitNode.attribute(EFFORT)
+            //                                  .as_double();
+            // if (effortLimit < 0.0) {
+            //     os() << "Error: effort limit of joint '" << jointName
+            //          << "' have to be positive." << endl;
+            //     return false;
+            // }
+        }
+    }
+
+    // 'dynamics' tag (not supported in choreonoid)
+    if (!jointNode.child(DYNAMICS).empty()) {
+        os() << "Warning: 'dynamics' tag is currently not supported." << endl;
+    }
+
+    // 'mimic' tag (not supported in choreonoid)
+    if (!jointNode.child(MIMIC).empty()) {
+        os() << "Warning: mimic joint is currently not supported." << endl;
+    }
     return true;
 }

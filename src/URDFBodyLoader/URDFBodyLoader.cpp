@@ -176,7 +176,8 @@ private:
         const char* grandchild_name,
         const char* attr_name,
         const char* attr_value);
-    vector<xml_node> findRootLinks(const xml_node& robot);
+    vector<LinkPtr> findRootLinks(
+        const std::unordered_map<string, LinkPtr>& linkMap);
     bool loadLink(LinkPtr link, const xml_node& linkNode);
     bool loadInertialTag(LinkPtr& link, const xml_node& inertialNode);
     bool loadVisualTag(LinkPtr& link, const xml_node& visualNode);
@@ -264,9 +265,14 @@ bool URDFBodyLoader::Impl::load(Body* body, const string& filename)
         }
     }
 
-    // TODO: find the root link
-    // LinkPtr rootLink = ...
-    // body->setRootLink(rootLink);
+    // finds the root link
+    vector<LinkPtr> rootLinks = findRootLinks(linkMap);
+    if (rootLinks.empty()) {
+        os() << "Error: no root link is found." << endl;
+    } else if (rootLinks.size() > 1) {
+        os() << "Error: multiple root links are found." << endl;
+    }
+    body->setRootLink(rootLinks.at(0));
 
     // TEST
     for (auto element : linkMap) {
@@ -301,17 +307,13 @@ vector<xml_node> URDFBodyLoader::Impl::findChildrenByGrandchildAttribute(
     return result;
 }
 
-vector<xml_node> URDFBodyLoader::Impl::findRootLinks(const xml_node& robot)
+vector<LinkPtr> URDFBodyLoader::Impl::findRootLinks(
+    const std::unordered_map<string, LinkPtr>& linkMap)
 {
-    vector<xml_node> rootLinks;
-    for (xml_node link : robot.children(LINK)) {
-        if (findChildrenByGrandchildAttribute(robot,
-                                              JOINT,
-                                              CHILD,
-                                              LINK,
-                                              link.attribute(NAME).value())
-                .size()
-            == 0) {
+    vector<LinkPtr> rootLinks;
+    for (auto mapElement : linkMap) {
+        const LinkPtr link = mapElement.second;
+        if (link->parent() == nullptr) {
             rootLinks.push_back(link);
         }
     }

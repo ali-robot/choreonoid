@@ -210,8 +210,10 @@ bool URDFBodyLoader::load(Body* body, const std::string& filename)
 bool URDFBodyLoader::Impl::load(Body* body, const string& filename)
 {
     pugi::xml_document doc;
-    pugi::xml_parse_result result = doc.load_file(filename.c_str());
-    os() << "Load result: " << result.description() << endl;
+    const pugi::xml_parse_result result = doc.load_file(filename.c_str());
+    if (!result) {
+        os() << "Error: parsing XML failed: " << result.description() << endl;
+    }
 
     // checks if only one 'robot' tag exists in the URDF
     if (++doc.children(ROBOT).begin() != doc.children(ROBOT).end()) {
@@ -442,7 +444,7 @@ bool URDFBodyLoader::Impl::loadCollisionTag(LinkPtr& link,
 
 
 bool URDFBodyLoader::Impl::readOriginTag(const xml_node& originNode,
-                                         const string& elementName,
+                                         const string& parentName,
                                          Vector3& translation,
                                          Matrix3& rotation)
 {
@@ -452,7 +454,7 @@ bool URDFBodyLoader::Impl::readOriginTag(const xml_node& originNode,
     } else {
         Vector3 origin_xyz;
         if (!toVector3(origin_xyz_str, translation)) {
-            os() << "Error: origin xyz of " << elementName
+            os() << "Error: origin xyz of " << parentName
                  << " is written in invalid format." << endl;
             return false;
         }
@@ -464,7 +466,7 @@ bool URDFBodyLoader::Impl::readOriginTag(const xml_node& originNode,
     } else {
         Vector3 origin_rpy;
         if (!toVector3(origin_rpy_str, origin_rpy)) {
-            os() << "Error: origin rpy of " << elementName
+            os() << "Error: origin rpy of " << parentName
                  << " is written in invalid format.";
             return false;
         }

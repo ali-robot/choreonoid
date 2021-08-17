@@ -170,12 +170,6 @@ private:
     SceneLoader sceneLoader_;
     ROSPackageSchemeHandler ROSPackageSchemeHandler_;
 
-    vector<xml_node> findChildrenByGrandchildAttribute(
-        const xml_node& node,
-        const char* child_name,
-        const char* grandchild_name,
-        const char* attr_name,
-        const char* attr_value);
     vector<LinkPtr> findRootLinks(
         const std::unordered_map<string, LinkPtr>& linkMap);
     bool loadLink(LinkPtr link, const xml_node& linkNode);
@@ -288,24 +282,6 @@ bool URDFBodyLoader::Impl::load(Body* body, const string& filename)
     return true;
 }
 
-vector<xml_node> URDFBodyLoader::Impl::findChildrenByGrandchildAttribute(
-    const xml_node& node,
-    const char* child_name,
-    const char* grandchild_name,
-    const char* attr_name,
-    const char* attr_value)
-{
-    vector<xml_node> result;
-    for (xml_node child : node.children(child_name)) {
-        xml_node candidate = child.find_child_by_attribute(grandchild_name,
-                                                           attr_name,
-                                                           attr_value);
-        if (candidate != xml_node()) {
-            result.push_back(candidate);
-        }
-    }
-    return result;
-}
 
 vector<LinkPtr> URDFBodyLoader::Impl::findRootLinks(
     const std::unordered_map<string, LinkPtr>& linkMap)

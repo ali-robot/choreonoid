@@ -224,17 +224,6 @@ bool URDFBodyLoader::Impl::load(Body* body, const string& filename)
     }
     body->setRootLink(rootLinks.at(0));
 
-    // TEST
-    for (auto element : linkMap) {
-        os() << "[TEST]" << endl
-             << "\tName: " << element.first << endl
-             << "\tMass: " << element.second->mass() << endl
-             << "\tInertia: " << element.second->I().row(0) << endl
-             << "\t         " << element.second->I().row(1) << endl
-             << "\t         " << element.second->I().row(2) << endl
-             << "\tCoM: " << element.second->centerOfMass().transpose() << endl;
-    }
-
     return true;
 }
 
